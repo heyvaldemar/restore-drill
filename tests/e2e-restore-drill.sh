@@ -45,18 +45,28 @@ echo "building a source database and dumping it"
 docker rm -f "$RUN-source" >/dev/null 2>&1
 docker run -d --name "$RUN-source" -e POSTGRES_DB=appdb -e POSTGRES_USER=appuser \
   -e POSTGRES_PASSWORD=drilltestpassword "$PG_IMAGE" >/dev/null || { echo "cannot start postgres"; exit 1; }
-for _ in $(seq 1 60); do
-  docker exec "$RUN-source" pg_isready -q -U appuser -d appdb >/dev/null 2>&1 && break
+# An AUTHENTICATED query, not pg_isready. The image starts a temporary server
+# to run its own initialisation and a liveness probe answers it, so "ready"
+# arrives before the credentials exist. This bug was in the drill itself until
+# the MariaDB scenarios found it; it was still here, in the harness.
+ready=false
+for _ in $(seq 1 90); do
+  if docker exec "$RUN-source" psql -tAq -U appuser -d appdb -c 'select 1' 2>/dev/null | grep -q '^1$'; then ready=true; break; fi
   sleep 2
 done
+[ "$ready" = true ] || { echo "the source postgres never accepted an authenticated query"; docker logs "$RUN-source" 2>&1 | tail -10; exit 1; }
 docker exec "$RUN-source" psql -q -U appuser -d appdb -c "
   create role reporting;
   create table invoices(id serial primary key, total numeric);
   create table customers(id serial primary key, name text);
   insert into invoices(total) select generate_series(1,50);
-  alter table invoices owner to reporting;" >/dev/null 2>&1 \
+  alter table invoices owner to reporting;" \
   || { echo "cannot seed the source database"; exit 1; }
 docker exec "$RUN-source" pg_dump -U appuser -d appdb | gzip > "$WORK/backups/app-2026-09-05_00-00.gz"
+# A dump this small is an empty one, and an empty fixture makes every scenario
+# below meaningless while looking like a real failure of the thing under test.
+[ "$(wc -c < "$WORK/backups/app-2026-09-05_00-00.gz")" -gt 300 ] \
+  || { echo "the source dump is empty - the fixture failed, not the drill"; exit 1; }
 echo "  dump: $(wc -c < "$WORK/backups/app-2026-09-05_00-00.gz" | tr -d ' ') bytes"
 
 # 1. the good case
@@ -143,15 +153,20 @@ mdrill() {
 docker rm -f "$RUN-msource" >/dev/null 2>&1
 docker run -d --name "$RUN-msource" -e MARIADB_DATABASE=appdb \
   -e MARIADB_ROOT_PASSWORD=drilltestpassword "$MARIADB_IMAGE" >/dev/null
-for _ in $(seq 1 90); do
-  docker exec "$RUN-msource" mariadb-admin ping -uroot -pdrilltestpassword --silent >/dev/null 2>&1 && break
+mready=false
+for _ in $(seq 1 120); do
+  if docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword -NBe 'select 1' 2>/dev/null | grep -q '^1$'; then mready=true; break; fi
   sleep 2
 done
+[ "$mready" = true ] || { echo "the source mariadb never accepted an authenticated query"; docker logs "$RUN-msource" 2>&1 | tail -10; exit 1; }
 docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword appdb -e "
   create table invoices(id int primary key auto_increment, total decimal(10,2));
   create table customers(id int primary key auto_increment, name varchar(64));
-  insert into invoices(total) values (1),(2),(3);" >/dev/null 2>&1
-docker exec "$RUN-msource" mariadb-dump -uroot -pdrilltestpassword appdb 2>/dev/null | gzip > "$WORK/mbackups/app-2026-09-05_00-00.gz"
+  insert into invoices(total) values (1),(2),(3);" \
+  || { echo "cannot seed the source mariadb"; exit 1; }
+docker exec "$RUN-msource" mariadb-dump -uroot -pdrilltestpassword appdb | gzip > "$WORK/mbackups/app-2026-09-05_00-00.gz"
+[ "$(wc -c < "$WORK/mbackups/app-2026-09-05_00-00.gz")" -gt 300 ] \
+  || { echo "the source mariadb dump is empty - the fixture failed, not the drill"; exit 1; }
 
 out="$(mdrill)"; rc=$?
 if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q "DRILL OK"; then

@@ -39,7 +39,11 @@ _(no unreleased changes yet)_
   drill went ahead before the credentials existed and failed with access
   denied. Readiness now requires an authenticated query to return a row. Found
   by the MariaDB scenarios in the test suite, on the first run that exercised
-  that path.
+  that path — and then found a second time in the test harness itself, on the
+  first CI run, where the same probe let the source database be seeded before
+  it was ready and produced a twenty-byte dump that made the drill look wrong.
+  Fixture failures are now loud: an empty source dump stops the run and says
+  the fixture failed rather than letting nine scenarios report on nothing.
 
 [Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/heyvaldemar/restore-drill/releases/tag/v1.0.0
