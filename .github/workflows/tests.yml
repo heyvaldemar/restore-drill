@@ -18,9 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: ShellCheck
+        # Pinned, and the same image a maintainer runs locally. Ubuntu's
+        # packaged shellcheck is a different version with different defaults,
+        # so a tree that lints clean on a laptop can fail here for findings the
+        # laptop never mentioned - which is a CI failure that teaches nothing.
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck restore-drill.sh tests/e2e-restore-drill.sh
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 restore-drill.sh tests/e2e-restore-drill.sh
       - name: The systemd units parse
         # systemd-analyze verify reports on units it cannot resolve paths for,
         # so the calendar expressions are checked directly: an OnCalendar that
