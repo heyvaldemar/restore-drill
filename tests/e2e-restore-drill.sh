@@ -29,6 +29,7 @@ trap cleanup EXIT
 pass() { echo "  PASS: $1"; PASSED=$((PASSED+1)); }
 fail() { echo "  FAIL: $1"; FAILED=$((FAILED+1)); }
 
+# shellcheck disable=SC2120  # takes no arguments; the env is the interface
 drill() {   # runs the drill over $WORK/backups, prints everything, returns its code
   DRILL_ENGINE=postgres DRILL_IMAGE="$PG_IMAGE" \
   DRILL_BACKUPS_PATH="$WORK/backups" DRILL_DB_NAME=appdb DRILL_DB_USER=appuser \
@@ -87,9 +88,7 @@ else
 fi
 
 # 3. the OK stamp is written only on success, and the RUN stamp always
-[ -f "$WORK/state/last-run" ] && [ -f "$WORK/state/last-ok" ] \
-  && pass "both stamps written after a clean drill" \
-  || fail "stamps missing after a clean drill"
+if [ -f "$WORK/state/last-run" ] && [ -f "$WORK/state/last-ok" ]; then pass "both stamps written after a clean drill"; else fail "stamps missing after a clean drill"; fi
 
 # 4. a truncated archive
 cp "$WORK/backups/app-2026-09-05_00-00.gz" "$WORK/good.gz"
@@ -120,9 +119,7 @@ before="$(cat "$WORK/state/last-run")"
 sleep 1
 drill >/dev/null 2>&1
 after="$(cat "$WORK/state/last-run")"
-[ "$after" != "$before" ] \
-  && pass "the run stamp moves even on a failing drill" \
-  || fail "the run stamp did not move, so a stopped drill looks like a failing one"
+if [ "$after" != "$before" ]; then pass "the run stamp moves even on a failing drill"; else fail "the run stamp did not move, so a stopped drill looks like a failing one"; fi
 
 # 7. .partial and .failed files are never selected
 rm -f "$WORK/backups"/*.gz
@@ -187,9 +184,7 @@ fi
 head -c 400 "$WORK/mbackups/app-2026-09-05_00-00.gz" > "$WORK/mbackups/app-2026-09-05_02-00.gz"
 rm -f "$WORK/mstate/last-ok"
 out="$(mdrill)"; rc=$?
-[ $rc -ne 0 ] \
-  && pass "a truncated MariaDB archive fails the drill" \
-  || fail "a truncated MariaDB archive passed"
+if [ $rc -ne 0 ]; then pass "a truncated MariaDB archive fails the drill"; else fail "a truncated MariaDB archive passed"; fi
 
 echo
 echo "passed: $PASSED   failed: $FAILED"
