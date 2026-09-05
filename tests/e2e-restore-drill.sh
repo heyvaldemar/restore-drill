@@ -1,0 +1,181 @@
+#!/bin/bash
+# Does the drill actually tell a good backup from a bad one?
+#
+# Six scenarios against real database containers and real dumps. Each one
+# exists because a check that only ever sees healthy input is not known to
+# work — the whole point of a restore drill is the day the input is not
+# healthy, and that is the case that must be exercised deliberately.
+#
+#   ./tests/e2e-restore-drill.sh
+#
+# Needs docker. Everything it creates is named for this run and removed on
+# exit, including on failure.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DRILL="$ROOT/restore-drill.sh"
+PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
+WORK="$(mktemp -d)"
+RUN="drilltest-$$"
+PASSED=0; FAILED=0
+
+cleanup() {
+  docker rm -f "$RUN-source" "$RUN-msource" >/dev/null 2>&1
+  docker ps -aq --filter "name=restore-drill-" | xargs -r docker rm -f >/dev/null 2>&1
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+pass() { echo "  PASS: $1"; PASSED=$((PASSED+1)); }
+fail() { echo "  FAIL: $1"; FAILED=$((FAILED+1)); }
+
+drill() {   # runs the drill over $WORK/backups, prints everything, returns its code
+  DRILL_ENGINE=postgres DRILL_IMAGE="$PG_IMAGE" \
+  DRILL_BACKUPS_PATH="$WORK/backups" DRILL_DB_NAME=appdb DRILL_DB_USER=appuser \
+  DRILL_DB_PASSWORD=drilltestpassword DRILL_STATE_DIR="$WORK/state" \
+  DRILL_TIMEOUT=120 "$@" bash "$DRILL" 2>&1
+}
+
+echo "=== restore drill: does it tell a good backup from a bad one? ==="
+mkdir -p "$WORK/backups" "$WORK/state"
+
+# ---------------------------------------------------------------- a real dump
+echo
+echo "building a source database and dumping it"
+docker rm -f "$RUN-source" >/dev/null 2>&1
+docker run -d --name "$RUN-source" -e POSTGRES_DB=appdb -e POSTGRES_USER=appuser \
+  -e POSTGRES_PASSWORD=drilltestpassword "$PG_IMAGE" >/dev/null || { echo "cannot start postgres"; exit 1; }
+for _ in $(seq 1 60); do
+  docker exec "$RUN-source" pg_isready -q -U appuser -d appdb >/dev/null 2>&1 && break
+  sleep 2
+done
+docker exec "$RUN-source" psql -q -U appuser -d appdb -c "
+  create role reporting;
+  create table invoices(id serial primary key, total numeric);
+  create table customers(id serial primary key, name text);
+  insert into invoices(total) select generate_series(1,50);
+  alter table invoices owner to reporting;" >/dev/null 2>&1 \
+  || { echo "cannot seed the source database"; exit 1; }
+docker exec "$RUN-source" pg_dump -U appuser -d appdb | gzip > "$WORK/backups/app-2026-09-05_00-00.gz"
+echo "  dump: $(wc -c < "$WORK/backups/app-2026-09-05_00-00.gz" | tr -d ' ') bytes"
+
+# 1. the good case
+out="$(drill)"; rc=$?
+if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q "DRILL OK"; then
+  pass "a real dump restores and is reported OK"
+else
+  fail "a real dump was rejected"; printf '%s\n' "$out" | sed 's/^/        /' | tail -8
+fi
+
+# 2. the role the dump hands objects to must be created for it
+#    Without this the restore emits one error per owned object and the drill
+#    would report failure on a backup that is actually fine.
+if printf '%s' "$out" | grep -q "pre-created roles from the dump"; then
+  pass "roles referenced by the dump are created before the restore"
+else
+  fail "the dump owns a table by 'reporting' and no role was pre-created"
+fi
+
+# 3. the OK stamp is written only on success, and the RUN stamp always
+[ -f "$WORK/state/last-run" ] && [ -f "$WORK/state/last-ok" ] \
+  && pass "both stamps written after a clean drill" \
+  || fail "stamps missing after a clean drill"
+
+# 4. a truncated archive
+cp "$WORK/backups/app-2026-09-05_00-00.gz" "$WORK/good.gz"
+head -c 400 "$WORK/good.gz" > "$WORK/backups/app-2026-09-05_01-00.gz"
+rm -f "$WORK/state/last-ok"
+out="$(drill)"; rc=$?
+if [ $rc -ne 0 ] && [ ! -f "$WORK/state/last-ok" ]; then
+  pass "a truncated archive fails the drill and writes no OK stamp"
+else
+  fail "a truncated archive passed"; printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+# 5. a dump that is readable, loads without error, and contains nothing.
+#    This is the one a checksum check can never catch: the file is a perfectly
+#    valid gzip of a perfectly valid SQL script that creates no tables.
+printf 'SELECT 1;\n' | gzip > "$WORK/backups/app-2026-09-05_02-00.gz"
+rm -f "$WORK/state/last-ok"
+out="$(drill)"; rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "restored only"; then
+  pass "an empty but valid dump is caught by the table count"
+else
+  fail "an empty dump passed the drill"; printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+# 6. the RUN stamp still moves when the drill fails: a watcher must be able to
+#    tell a drill that is failing from one that has stopped running.
+before="$(cat "$WORK/state/last-run")"
+sleep 1
+drill >/dev/null 2>&1
+after="$(cat "$WORK/state/last-run")"
+[ "$after" != "$before" ] \
+  && pass "the run stamp moves even on a failing drill" \
+  || fail "the run stamp did not move, so a stopped drill looks like a failing one"
+
+# 7. .partial and .failed files are never selected
+rm -f "$WORK/backups"/*.gz
+cp "$WORK/good.gz" "$WORK/backups/app-2026-09-05_03-00.gz"
+sleep 1
+cp "$WORK/good.gz" "$WORK/backups/app-2026-09-05_04-00.gz.partial"
+cp "$WORK/good.gz" "$WORK/backups/app-2026-09-05_05-00.gz.failed"
+out="$(drill)"
+if printf '%s' "$out" | grep -q "app-2026-09-05_03-00.gz"; then
+  pass "a newer .partial or .failed file is not mistaken for a backup"
+else
+  fail "the drill picked a partial or failed file"; printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+
+# ---------------------------------------------------------- the MariaDB path
+# Supported, therefore exercised. A branch that is documented and never run is
+# a branch that works until the first person needs it.
+MARIADB_IMAGE="${MARIADB_IMAGE:-mariadb:11.4}"
+echo
+echo "the same three questions against $MARIADB_IMAGE"
+mkdir -p "$WORK/mbackups" "$WORK/mstate"
+mdrill() {
+  DRILL_ENGINE=mysql DRILL_IMAGE="$MARIADB_IMAGE" \
+  DRILL_BACKUPS_PATH="$WORK/mbackups" DRILL_DB_NAME=appdb DRILL_DB_USER=root \
+  DRILL_DB_PASSWORD=drilltestpassword DRILL_STATE_DIR="$WORK/mstate" \
+  DRILL_TIMEOUT=180 bash "$DRILL" 2>&1
+}
+docker rm -f "$RUN-msource" >/dev/null 2>&1
+docker run -d --name "$RUN-msource" -e MARIADB_DATABASE=appdb \
+  -e MARIADB_ROOT_PASSWORD=drilltestpassword "$MARIADB_IMAGE" >/dev/null
+for _ in $(seq 1 90); do
+  docker exec "$RUN-msource" mariadb-admin ping -uroot -pdrilltestpassword --silent >/dev/null 2>&1 && break
+  sleep 2
+done
+docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword appdb -e "
+  create table invoices(id int primary key auto_increment, total decimal(10,2));
+  create table customers(id int primary key auto_increment, name varchar(64));
+  insert into invoices(total) values (1),(2),(3);" >/dev/null 2>&1
+docker exec "$RUN-msource" mariadb-dump -uroot -pdrilltestpassword appdb 2>/dev/null | gzip > "$WORK/mbackups/app-2026-09-05_00-00.gz"
+
+out="$(mdrill)"; rc=$?
+if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q "DRILL OK"; then
+  pass "a real MariaDB dump restores and is reported OK"
+else
+  fail "a real MariaDB dump was rejected"; printf '%s\n' "$out" | sed 's/^/        /' | tail -8
+fi
+
+printf 'SELECT 1;\n' | gzip > "$WORK/mbackups/app-2026-09-05_01-00.gz"
+rm -f "$WORK/mstate/last-ok"
+out="$(mdrill)"; rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "restored only"; then
+  pass "an empty but valid MariaDB dump is caught by the table count"
+else
+  fail "an empty MariaDB dump passed"; printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+head -c 400 "$WORK/mbackups/app-2026-09-05_00-00.gz" > "$WORK/mbackups/app-2026-09-05_02-00.gz"
+rm -f "$WORK/mstate/last-ok"
+out="$(mdrill)"; rc=$?
+[ $rc -ne 0 ] \
+  && pass "a truncated MariaDB archive fails the drill" \
+  || fail "a truncated MariaDB archive passed"
+
+echo
+echo "passed: $PASSED   failed: $FAILED"
+[ "$FAILED" -eq 0 ]

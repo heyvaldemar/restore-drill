@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore drill for %i — prove the newest backup can be restored
+Documentation=https://github.com/heyvaldemar/restore-drill
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restore-drill/%i.env
+ExecStart=/usr/local/sbin/restore-drill.sh
+# Bounded, so a drill that hangs on an unresponsive daemon fails the unit
+# rather than sitting in "activating" until somebody looks. Raise it past
+# DRILL_TIMEOUT plus the time your largest dump takes to load.
+TimeoutStartSec=2h

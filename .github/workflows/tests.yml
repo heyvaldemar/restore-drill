@@ -1,0 +1,45 @@
+name: Restore Drill Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint the shell and the units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck restore-drill.sh tests/e2e-restore-drill.sh
+      - name: The systemd units parse
+        # systemd-analyze verify reports on units it cannot resolve paths for,
+        # so the calendar expressions are checked directly: an OnCalendar that
+        # does not parse installs cleanly and then never fires, which is the
+        # quietest way for a scheduled job to not exist.
+        run: |
+          systemd-analyze calendar "$(grep -oP '(?<=^OnCalendar=).*' restore-drill@.timer)"
+          systemd-analyze calendar --iterations=3 "$(grep -oP '(?<=^OnCalendar=).*' restore-drill@.timer)"
+
+  drill:
+    name: Ten scenarios against real databases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Run the end-to-end suite
+        # Real PostgreSQL and MariaDB containers, real dumps, and the three
+        # cases that must FAIL: a truncated archive, a dump that loads cleanly
+        # and creates nothing, and a .partial file newer than every backup. A
+        # drill that has only ever seen a healthy dump is not known to work.
+        run: |
+          chmod +x tests/e2e-restore-drill.sh
+          ./tests/e2e-restore-drill.sh

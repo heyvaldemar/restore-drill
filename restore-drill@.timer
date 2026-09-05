@@ -1,0 +1,13 @@
+[Unit]
+Description=Quarterly restore drill for %i
+
+[Timer]
+# Quarterly on the 20th, away from month-end reporting and from the first of
+# the month when other maintenance runs. Persistent, so a drill missed because
+# the machine was off runs when it comes back rather than waiting a quarter.
+OnCalendar=*-01,04,07,10-20 03:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
