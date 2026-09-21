@@ -45,6 +45,15 @@ die() { log "DRILL FAILED: $*"; exit 1; }
 : "${DRILL_DB_PASSWORD:?set DRILL_DB_PASSWORD}"
 DRILL_PATTERN="${DRILL_PATTERN:-*.gz}"
 DRILL_MIN_TABLES="${DRILL_MIN_TABLES:-1}"
+# THE LIVE DATABASE IS THE ONLY REFERENCE THAT DOES NOT GO STALE.
+#
+# A floor written by hand is a number nobody revisits: it passes for a dump
+# that restored a fifth of the schema, and it keeps passing as the application
+# grows away from it. Name the running container and the drill asks it what it
+# has, then requires the restored copy to have all of it and says what did not
+# come back. Unset, the floor below is still applied — and it is the weaker
+# check, which this says out loud rather than leaving to be assumed.
+DRILL_LIVE_CONTAINER="${DRILL_LIVE_CONTAINER:-}"
 DRILL_TIMEOUT="${DRILL_TIMEOUT:-300}"
 STATE_DIR="${DRILL_STATE_DIR:-/var/lib/restore-drill}"
 
@@ -140,8 +149,35 @@ fi
 printf '%s' "$out" | grep -iE '^(ERROR|FATAL)' | head -5 | while IFS= read -r l; do log "  $l"; done
 
 [ "${errors:-1}" -eq 0 ] || die "$errors errors while restoring $newest"
-[ "${tables:-0}" -ge "$DRILL_MIN_TABLES" ] \
-  || die "restored only ${tables:-0} tables, expected at least $DRILL_MIN_TABLES — the dump loaded without error and produced almost nothing, which is what an empty backup looks like"
 
-log "DRILL OK: $newest restored into a throwaway $DRILL_IMAGE, $tables tables, 0 errors"
+# table_list <container>: one table name per line, sorted, empty on any failure.
+table_list() {
+  if [ "$DRILL_ENGINE" = postgres ]; then
+    docker exec "$1" psql -tAq -U "$DRILL_DB_USER" -d "$DRILL_DB_NAME" \
+      -c "select table_name from information_schema.tables where table_schema not in ('pg_catalog','information_schema') order by 1;" 2>/dev/null
+  else
+    docker exec "$1" sh -c \
+      "mariadb -uroot -p$DRILL_DB_PASSWORD -NBe \"select table_name from information_schema.tables where table_schema='$DRILL_DB_NAME' order by 1;\"" 2>/dev/null
+  fi
+}
+
+if [ -n "$DRILL_LIVE_CONTAINER" ]; then
+  live="$(table_list "$DRILL_LIVE_CONTAINER")"
+  # An unreachable live database answers the same as one with no tables, and
+  # reading that as "nothing is missing" would turn this into a check that
+  # cannot fail — the exact shape this whole tool exists to refuse.
+  [ -n "$live" ] \
+    || die "could not read the table list from $DRILL_LIVE_CONTAINER — the comparison did not happen, which is not the same as a clean drill"
+  restored="$(table_list "$CONTAINER")"
+  missing="$(comm -23 <(printf '%s\n' "$live" | sort -u) <(printf '%s\n' "$restored" | sort -u))"
+  if [ -n "$missing" ]; then
+    count="$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
+    die "$count table(s) the live database has did not come back: $(printf '%s' "$missing" | tr '\n' ' ' | cut -c1-300)"
+  fi
+  log "DRILL OK: $newest restored into a throwaway $DRILL_IMAGE, every one of $(printf '%s\n' "$live" | wc -l | tr -d ' ') live tables present, 0 errors"
+else
+  [ "${tables:-0}" -ge "$DRILL_MIN_TABLES" ] \
+    || die "restored only ${tables:-0} tables, expected at least $DRILL_MIN_TABLES — the dump loaded without error and produced almost nothing, which is what an empty backup looks like"
+  log "DRILL OK: $newest restored into a throwaway $DRILL_IMAGE, $tables tables, 0 errors (floor only: set DRILL_LIVE_CONTAINER to compare against the live schema instead)"
+fi
 date +%s > "$STATE_DIR/last-ok"

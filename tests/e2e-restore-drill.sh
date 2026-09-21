@@ -34,7 +34,11 @@ drill() {   # runs the drill over $WORK/backups, prints everything, returns its 
   DRILL_ENGINE=postgres DRILL_IMAGE="$PG_IMAGE" \
   DRILL_BACKUPS_PATH="$WORK/backups" DRILL_DB_NAME=appdb DRILL_DB_USER=appuser \
   DRILL_DB_PASSWORD=drilltestpassword DRILL_STATE_DIR="$WORK/state" \
-  DRILL_TIMEOUT=120 "$@" bash "$DRILL" 2>&1
+  DRILL_TIMEOUT=120 env "$@" bash "$DRILL" 2>&1
+  # `env`, not a bare "$@": a word that comes out of an expansion is an
+  # argument, not an assignment, so `VAR=x` handed in this way reached the
+  # shell as a command to run and every case using it failed on "command not
+  # found" while looking like the drill had rejected the input.
 }
 
 echo "=== restore drill: does it tell a good backup from a bad one? ==="
@@ -85,6 +89,50 @@ if printf '%s' "$out" | grep -q "pre-created roles from the dump"; then
   pass "roles referenced by the dump are created before the restore"
 else
   fail "the dump owns a table by 'reporting' and no role was pre-created"
+fi
+
+# 2b. THE LIVE DATABASE AS THE REFERENCE, and the floor it replaces.
+#     DRILL_MIN_TABLES is a number somebody wrote once: it passes for a dump
+#     that restored a fifth of the schema and keeps passing as the application
+#     grows away from it. Pointed at the running database, the drill asks what
+#     it has and requires all of it back.
+out="$(drill DRILL_LIVE_CONTAINER="$RUN-source")"; rc=$?
+if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q "every one of 2 live tables present"; then
+  pass "a complete dump matches the live schema table for table"
+else
+  fail "a complete dump was not recognised as complete"; printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+#     The case that matters: the live database grows a table the dump predates.
+#     The floor cannot see this at all — two tables still clears a floor of one.
+docker exec "$RUN-source" psql -q -U appuser -d appdb \
+  -c "create table payments(id serial primary key, amount numeric);" >/dev/null 2>&1
+out="$(drill DRILL_LIVE_CONTAINER="$RUN-source")"; rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "did not come back"; then
+  pass "a table the live database has and the dump does not is a failure"
+else
+  fail "a dump missing a live table was accepted"; printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+if printf '%s' "$out" | grep -q "payments"; then
+  pass "and it names the table that did not come back"
+else
+  fail "it failed without saying which table was missing"
+fi
+#     The same input under the old floor passes, which is the whole argument.
+out="$(drill DRILL_MIN_TABLES=1)"; rc=$?
+if [ $rc -eq 0 ]; then
+  pass "and the hand-written floor accepts that same dump, as it always did"
+else
+  fail "the floor rejected a dump it should have passed"
+fi
+docker exec "$RUN-source" psql -q -U appuser -d appdb -c "drop table payments;" >/dev/null 2>&1
+
+#     A live database that cannot be read is not a clean drill.
+out="$(drill DRILL_LIVE_CONTAINER="$RUN-no-such-container")"; rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "comparison did not happen"; then
+  pass "an unreadable live database fails rather than passing empty"
+else
+  fail "an unreadable live database was read as nothing missing"
 fi
 
 # 3. the OK stamp is written only on success, and the RUN stamp always

@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Added
+
+- **`DRILL_LIVE_CONTAINER`: the live database as the reference.** Name the running container and the drill asks it which tables it has, then requires every one of them back from the restored dump and names the ones that did not come. A live database it cannot read fails the drill rather than reading as nothing missing, because a comparison that did not happen is not a clean result.
+
+### Changed
+
+- **`DRILL_MIN_TABLES` is now the fallback, and says so.** A floor written by hand is a number nobody revisits: it passes for a dump that restored a fifth of the schema and keeps passing as the application grows away from it. The suite makes that concrete — the live database grows one table, the drill fails and names it, and the same dump under the old floor passes exactly as it always did.
 
 ## [1.0.0] - 2026-09-05
 

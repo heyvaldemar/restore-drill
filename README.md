@@ -15,7 +15,7 @@ Freshness says the file was written. `gzip -t` says it was not corrupted on disk
 
 **Roles that exist in the cluster and not in the dump.** `pg_dump` writes `OWNER TO` and never `CREATE ROLE`, because roles are cluster-level objects. Restore into a fresh cluster and you get one error per owned object — 245 of them in the case that prompted this — and the objects end up owned by whoever ran the restore. The drill extracts the roles the dump refers to and creates them first, which is what a real recovery has to do anyway.
 
-**A dump that loads perfectly and contains nothing.** A valid gzip of a valid SQL script that creates no tables passes every integrity check ever written. `DRILL_MIN_TABLES` is the only thing that catches it.
+**A dump that loads perfectly and contains nothing.** A valid gzip of a valid SQL script that creates no tables passes every integrity check ever written. Point `DRILL_LIVE_CONTAINER` at the running database and the drill requires back every table the live one has, naming what did not come; `DRILL_MIN_TABLES` is the fallback when you cannot, and it only catches the completely empty case.
 
 ## Install
 
@@ -48,7 +48,7 @@ Success is a change of state, never the presence of a file. Both stamps are writ
 
 ## Configuration
 
-Every knob lives in the env file; `restore-drill.env.example` documents each one inline. The two worth thinking about are `DRILL_IMAGE`, which must match the live database's image rather than being the newest available, and `DRILL_MIN_TABLES`, which should sit near your real schema size rather than at its default of 1.
+Every knob lives in the env file; `restore-drill.env.example` documents each one inline. The two worth thinking about are `DRILL_IMAGE`, which must match the live database's image rather than being the newest available, and `DRILL_LIVE_CONTAINER`, which makes the live schema the reference instead of a number you would have to keep revising. Without it the drill falls back to `DRILL_MIN_TABLES`, a floor that passes for a dump which restored a fifth of the schema and goes on passing as the application grows away from it.
 
 ## What it does not do
 
