@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.0] - 2026-09-20
+
 ### Added
 
 - **`DRILL_LIVE_CONTAINER`: the live database as the reference.** Name the running container and the drill asks it which tables it has, then requires every one of them back from the restored dump and names the ones that did not come. A live database it cannot read fails the drill rather than reading as nothing missing, because a comparison that did not happen is not a clean result.
@@ -51,5 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fixture failures are now loud: an empty source dump stops the run and says
   the fixture failed rather than letting nine scenarios report on nothing.
 
-[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/heyvaldemar/restore-drill/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/heyvaldemar/restore-drill/releases/tag/v1.0.0
