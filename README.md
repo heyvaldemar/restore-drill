@@ -1,6 +1,7 @@
 # Restore drill
 
 [![Restore Drill Tests](https://github.com/heyvaldemar/restore-drill/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/heyvaldemar/restore-drill/actions/workflows/tests.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14905/badge)](https://www.bestpractices.dev/projects/14905)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A backup nobody has restored is a hypothesis.
