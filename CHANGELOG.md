@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(no unreleased changes yet)_
 
+## [1.1.1] - 2026-10-25
+
+### Fixed
+
+- **A drill could fail against a sound dump, straight after "ready".** Both database images run their initialisation on a temporary server and then restart it. Once the init has set the password, that temporary server answers the authenticated query the drill waited on, and then stops; a restore that starts in that moment meets no server and reports a failed drill. It happened once in CI on 2026-10-24 ("Can't connect to local server through socket"), and the test harness's own seeding hit the same gap in a local run today. The temporary servers listen on no TCP port, so the readiness query now goes over 127.0.0.1, which only the server that stays can answer. The password reaches it by name (`-e PGPASSWORD`, `-e MYSQL_PWD`), on no command line `ps` can show.
+
 ## [1.1.0] - 2026-09-20
 
 ### Added
@@ -55,6 +61,7 @@ _(no unreleased changes yet)_
   Fixture failures are now loud: an empty source dump stops the run and says
   the fixture failed rather than letting nine scenarios report on nothing.
 
-[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/heyvaldemar/restore-drill/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/heyvaldemar/restore-drill/releases/tag/v1.0.0

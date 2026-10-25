@@ -50,13 +50,17 @@ echo "building a source database and dumping it"
 docker rm -f "$RUN-source" >/dev/null 2>&1
 docker run -d --name "$RUN-source" -e POSTGRES_DB=appdb -e POSTGRES_USER=appuser \
   -e POSTGRES_PASSWORD=drilltestpassword "$PG_IMAGE" >/dev/null || { echo "cannot start postgres"; exit 1; }
-# An AUTHENTICATED query, not pg_isready. The image starts a temporary server
-# to run its own initialisation and a liveness probe answers it, so "ready"
-# arrives before the credentials exist. This bug was in the drill itself until
-# the MariaDB scenarios found it; it was still here, in the harness.
+# An AUTHENTICATED query, not pg_isready, and OVER TCP. The image starts a
+# temporary server to run its own initialisation and a liveness probe answers
+# it, so "ready" arrives before the credentials exist. This bug was in the
+# drill itself until the MariaDB scenarios found it; it was still here, in the
+# harness. Over the socket, the temporary server can answer even the
+# authenticated query and then stop; it listens on no TCP port, so 127.0.0.1
+# is answered only by the server that stays. The drill and this harness both
+# met that gap in October 2026.
 ready=false
 for _ in $(seq 1 90); do
-  if docker exec "$RUN-source" psql -tAq -U appuser -d appdb -c 'select 1' 2>/dev/null | grep -q '^1$'; then ready=true; break; fi
+  if docker exec -e PGPASSWORD=drilltestpassword "$RUN-source" psql -h 127.0.0.1 -tAq -U appuser -d appdb -c 'select 1' 2>/dev/null | grep -q '^1$'; then ready=true; break; fi
   sleep 2
 done
 [ "$ready" = true ] || { echo "the source postgres never accepted an authenticated query"; docker logs "$RUN-source" 2>&1 | tail -10; exit 1; }
@@ -200,7 +204,8 @@ docker run -d --name "$RUN-msource" -e MARIADB_DATABASE=appdb \
   -e MARIADB_ROOT_PASSWORD=drilltestpassword "$MARIADB_IMAGE" >/dev/null
 mready=false
 for _ in $(seq 1 120); do
-  if docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword -NBe 'select 1' 2>/dev/null | grep -q '^1$'; then mready=true; break; fi
+  # Over TCP, as above.
+  if docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword -h 127.0.0.1 --protocol=TCP -NBe 'select 1' 2>/dev/null | grep -q '^1$'; then mready=true; break; fi
   sleep 2
 done
 [ "$mready" = true ] || { echo "the source mariadb never accepted an authenticated query"; docker logs "$RUN-msource" 2>&1 | tail -10; exit 1; }

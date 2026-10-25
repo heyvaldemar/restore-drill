@@ -93,26 +93,36 @@ case "$DRILL_ENGINE" in
       -e POSTGRES_DB="$DRILL_DB_NAME" -e POSTGRES_USER="$DRILL_DB_USER" \
       -e POSTGRES_PASSWORD="$DRILL_DB_PASSWORD" "$DRILL_IMAGE" >/dev/null \
       || die "could not start a throwaway $DRILL_IMAGE"
-    # An AUTHENTICATED query, not pg_isready. Both database images start a
-    # temporary server to run their initialisation, and a liveness probe
-    # answers it happily — so "ready" arrives before the credentials the
-    # restore needs exist. Requiring a real answer to a real query is the only
-    # form of this check that means what it says.
-    ready="psql -tAq -U $DRILL_DB_USER -d $DRILL_DB_NAME -c 'select 1' | grep -q '^1$'"
+    # An AUTHENTICATED query, not pg_isready, and OVER TCP. Both database
+    # images start a temporary server to run their initialisation, and a
+    # liveness probe answers it happily, so "ready" arrives before the
+    # credentials the restore needs exist. An authenticated query over the
+    # socket was not enough either: once the init has set the password, the
+    # temporary server answers it too, then stops, and the restore meets no
+    # server at all. That happened once in CI on 2026-10-24 (MariaDB, "Can't
+    # connect to local server through socket" straight after "ready"). The
+    # temporary servers listen on no TCP port (listen_addresses='' here,
+    # --skip-networking for MariaDB), so a query over 127.0.0.1 can only be
+    # answered by the server the restore will use.
+    ready="psql -h 127.0.0.1 -tAq -U $DRILL_DB_USER -d $DRILL_DB_NAME -c 'select 1' | grep -q '^1$'"
     ;;
   mysql|mariadb)
     docker run -d --name "$CONTAINER" \
       -e MARIADB_DATABASE="$DRILL_DB_NAME" -e MYSQL_DATABASE="$DRILL_DB_NAME" \
       -e MARIADB_ROOT_PASSWORD="$DRILL_DB_PASSWORD" -e MYSQL_ROOT_PASSWORD="$DRILL_DB_PASSWORD" \
       "$DRILL_IMAGE" >/dev/null || die "could not start a throwaway $DRILL_IMAGE"
-    ready="mariadb -uroot -p$DRILL_DB_PASSWORD -NBe 'select 1' | grep -q '^1$'"
+    # Over TCP for the same reason: see the postgres branch above.
+    ready="mariadb -uroot -h 127.0.0.1 --protocol=TCP -NBe 'select 1' | grep -q '^1$'"
     ;;
   *) die "DRILL_ENGINE must be postgres or mysql, not '$DRILL_ENGINE'" ;;
 esac
 
 log "waiting up to ${DRILL_TIMEOUT}s for the throwaway database"
 deadline=$(( $(date +%s) + DRILL_TIMEOUT ))
-until docker exec "$CONTAINER" sh -c "$ready" >/dev/null 2>&1; do
+# The password goes in by NAME (-e PGPASSWORD, -e MYSQL_PWD), so it is on no
+# command line that `ps` on this host can show.
+export PGPASSWORD="$DRILL_DB_PASSWORD" MYSQL_PWD="$DRILL_DB_PASSWORD"
+until docker exec -e PGPASSWORD -e MYSQL_PWD "$CONTAINER" sh -c "$ready" >/dev/null 2>&1; do
   [ "$(date +%s)" -lt "$deadline" ] || die "the throwaway database never became ready"
   sleep 2
 done
