@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.2] - 2026-11-08
+
 ### Security
 
 - **The drill's database password is no longer on any command line.** The throwaway database was started with `-e POSTGRES_PASSWORD=<password>` / `-e MARIADB_ROOT_PASSWORD=<password>`, and the MariaDB restore and both table counts, including the one read from the live database, ran `sh -c "mariadb -uroot -p<password> …"` with the value expanded on the host, unquoted. A process's arguments are readable by every user on the host with `ps`, and the restore holds its `docker exec` open for as long as the dump takes to load. Every docker call now takes the password from the drill's environment by name (`-e POSTGRES_PASSWORD`, `-e MYSQL_PWD`), and `mariadb` runs without a shell around it. `tests/e2e-restore-drill.sh` uses a random password and reads every command line on the machine several times a second while all the drills run: none may carry it (178 samples, none did); against the previous script the same test found it in 7 of 179.
@@ -63,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fixture failures are now loud: an empty source dump stops the run and says
   the fixture failed rather than letting nine scenarios report on nothing.
 
-[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/heyvaldemar/restore-drill/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/heyvaldemar/restore-drill/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/heyvaldemar/restore-drill/releases/tag/v1.0.0
