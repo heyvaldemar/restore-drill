@@ -84,6 +84,11 @@ log "newest backup: $newest ($(wc -c < "$newest" | tr -d ' ') bytes)"
 gzip -t "$newest" 2>/dev/null || die "$newest is not a readable gzip archive"
 
 CONTAINER="restore-drill-$$-$(date +%s)"
+# THE PASSWORD REACHES DOCKER BY NAME, never as -e NAME=value or -p<value>:
+# every user on this host reads a process's arguments with ps, for as long as
+# the restore runs. Every docker call below takes it from this environment.
+export PGPASSWORD="$DRILL_DB_PASSWORD" MYSQL_PWD="$DRILL_DB_PASSWORD" POSTGRES_PASSWORD="$DRILL_DB_PASSWORD" \
+  MARIADB_ROOT_PASSWORD="$DRILL_DB_PASSWORD" MYSQL_ROOT_PASSWORD="$DRILL_DB_PASSWORD"
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
@@ -91,7 +96,7 @@ case "$DRILL_ENGINE" in
   postgres)
     docker run -d --name "$CONTAINER" \
       -e POSTGRES_DB="$DRILL_DB_NAME" -e POSTGRES_USER="$DRILL_DB_USER" \
-      -e POSTGRES_PASSWORD="$DRILL_DB_PASSWORD" "$DRILL_IMAGE" >/dev/null \
+      -e POSTGRES_PASSWORD "$DRILL_IMAGE" >/dev/null \
       || die "could not start a throwaway $DRILL_IMAGE"
     # An AUTHENTICATED query, not pg_isready, and OVER TCP. Both database
     # images start a temporary server to run their initialisation, and a
@@ -109,7 +114,7 @@ case "$DRILL_ENGINE" in
   mysql|mariadb)
     docker run -d --name "$CONTAINER" \
       -e MARIADB_DATABASE="$DRILL_DB_NAME" -e MYSQL_DATABASE="$DRILL_DB_NAME" \
-      -e MARIADB_ROOT_PASSWORD="$DRILL_DB_PASSWORD" -e MYSQL_ROOT_PASSWORD="$DRILL_DB_PASSWORD" \
+      -e MARIADB_ROOT_PASSWORD -e MYSQL_ROOT_PASSWORD \
       "$DRILL_IMAGE" >/dev/null || die "could not start a throwaway $DRILL_IMAGE"
     # Over TCP for the same reason: see the postgres branch above.
     ready="mariadb -uroot -h 127.0.0.1 --protocol=TCP -NBe 'select 1' | grep -q '^1$'"
@@ -119,9 +124,6 @@ esac
 
 log "waiting up to ${DRILL_TIMEOUT}s for the throwaway database"
 deadline=$(( $(date +%s) + DRILL_TIMEOUT ))
-# The password goes in by NAME (-e PGPASSWORD, -e MYSQL_PWD), so it is on no
-# command line that `ps` on this host can show.
-export PGPASSWORD="$DRILL_DB_PASSWORD" MYSQL_PWD="$DRILL_DB_PASSWORD"
 until docker exec -e PGPASSWORD -e MYSQL_PWD "$CONTAINER" sh -c "$ready" >/dev/null 2>&1; do
   [ "$(date +%s)" -lt "$deadline" ] || die "the throwaway database never became ready"
   sleep 2
@@ -149,11 +151,11 @@ if [ "$DRILL_ENGINE" = "postgres" ]; then
   tables="$(docker exec "$CONTAINER" psql -tAq -U "$DRILL_DB_USER" -d "$DRILL_DB_NAME" \
             -c "select count(*) from information_schema.tables where table_schema not in ('pg_catalog','information_schema');" 2>/dev/null || echo 0)"
 else
-  out="$(gunzip -c "$newest" | docker exec -i "$CONTAINER" \
-        sh -c "mariadb -uroot -p$DRILL_DB_PASSWORD $DRILL_DB_NAME" 2>&1)"
+  out="$(gunzip -c "$newest" | docker exec -i -e MYSQL_PWD "$CONTAINER" \
+        mariadb -uroot "$DRILL_DB_NAME" 2>&1)"
   errors="$(printf '%s' "$out" | grep -ci '^ERROR' || true)"
-  tables="$(docker exec "$CONTAINER" sh -c \
-            "mariadb -uroot -p$DRILL_DB_PASSWORD -NBe \"select count(*) from information_schema.tables where table_schema='$DRILL_DB_NAME';\"" 2>/dev/null || echo 0)"
+  tables="$(docker exec -e MYSQL_PWD "$CONTAINER" \
+            mariadb -uroot -NBe "select count(*) from information_schema.tables where table_schema='$DRILL_DB_NAME';" 2>/dev/null || echo 0)"
 fi
 
 printf '%s' "$out" | grep -iE '^(ERROR|FATAL)' | head -5 | while IFS= read -r l; do log "  $l"; done
@@ -166,8 +168,8 @@ table_list() {
     docker exec "$1" psql -tAq -U "$DRILL_DB_USER" -d "$DRILL_DB_NAME" \
       -c "select table_name from information_schema.tables where table_schema not in ('pg_catalog','information_schema') order by 1;" 2>/dev/null
   else
-    docker exec "$1" sh -c \
-      "mariadb -uroot -p$DRILL_DB_PASSWORD -NBe \"select table_name from information_schema.tables where table_schema='$DRILL_DB_NAME' order by 1;\"" 2>/dev/null
+    docker exec -e MYSQL_PWD "$1" \
+      mariadb -uroot -NBe "select table_name from information_schema.tables where table_schema='$DRILL_DB_NAME' order by 1;" 2>/dev/null
   fi
 }
 

@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Security
+
+- **The drill's database password is no longer on any command line.** The throwaway database was started with `-e POSTGRES_PASSWORD=<password>` / `-e MARIADB_ROOT_PASSWORD=<password>`, and the MariaDB restore and both table counts, including the one read from the live database, ran `sh -c "mariadb -uroot -p<password> …"` with the value expanded on the host, unquoted. A process's arguments are readable by every user on the host with `ps`, and the restore holds its `docker exec` open for as long as the dump takes to load. Every docker call now takes the password from the drill's environment by name (`-e POSTGRES_PASSWORD`, `-e MYSQL_PWD`), and `mariadb` runs without a shell around it. `tests/e2e-restore-drill.sh` uses a random password and reads every command line on the machine several times a second while all the drills run: none may carry it (178 samples, none did); against the previous script the same test found it in 7 of 179.
 
 ## [1.1.1] - 2026-10-25
 

@@ -18,11 +18,20 @@ PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
 WORK="$(mktemp -d)"
 RUN="drilltest-$$"
 PASSED=0; FAILED=0
+# Random per run, and reaching every docker call by name: the sampler below
+# reads every command line on this machine for it while the suite runs.
+DRILL_PW="$(openssl rand -hex 12)"
+export PGPASSWORD="$DRILL_PW" MYSQL_PWD="$DRILL_PW" POSTGRES_PASSWORD="$DRILL_PW" MARIADB_ROOT_PASSWORD="$DRILL_PW"
+PW_FILE="$(mktemp)"; PS_COUNTS="$(mktemp)"; chmod 600 "$PW_FILE"; printf '%s\n' "$DRILL_PW" > "$PW_FILE"
+# shellcheck disable=SC2009  # every command line on the machine, not one process
+( while :; do { ps -eo args= | grep -cF -f "$PW_FILE" || true; } >> "$PS_COUNTS"; sleep 0.2; done ) &
+SAMPLER=$!
 
 cleanup() {
   docker rm -f "$RUN-source" "$RUN-msource" >/dev/null 2>&1
   docker ps -aq --filter "name=restore-drill-" | xargs -r docker rm -f >/dev/null 2>&1
   rm -rf "$WORK"
+  kill "$SAMPLER" 2>/dev/null; rm -f "$PW_FILE" "$PS_COUNTS"
 }
 trap cleanup EXIT
 
@@ -33,7 +42,7 @@ fail() { echo "  FAIL: $1"; FAILED=$((FAILED+1)); }
 drill() {   # runs the drill over $WORK/backups, prints everything, returns its code
   DRILL_ENGINE=postgres DRILL_IMAGE="$PG_IMAGE" \
   DRILL_BACKUPS_PATH="$WORK/backups" DRILL_DB_NAME=appdb DRILL_DB_USER=appuser \
-  DRILL_DB_PASSWORD=drilltestpassword DRILL_STATE_DIR="$WORK/state" \
+  DRILL_DB_PASSWORD="$DRILL_PW" DRILL_STATE_DIR="$WORK/state" \
   DRILL_TIMEOUT=120 env "$@" bash "$DRILL" 2>&1
   # `env`, not a bare "$@": a word that comes out of an expansion is an
   # argument, not an assignment, so `VAR=x` handed in this way reached the
@@ -49,7 +58,7 @@ echo
 echo "building a source database and dumping it"
 docker rm -f "$RUN-source" >/dev/null 2>&1
 docker run -d --name "$RUN-source" -e POSTGRES_DB=appdb -e POSTGRES_USER=appuser \
-  -e POSTGRES_PASSWORD=drilltestpassword "$PG_IMAGE" >/dev/null || { echo "cannot start postgres"; exit 1; }
+  -e POSTGRES_PASSWORD "$PG_IMAGE" >/dev/null || { echo "cannot start postgres"; exit 1; }
 # An AUTHENTICATED query, not pg_isready, and OVER TCP. The image starts a
 # temporary server to run its own initialisation and a liveness probe answers
 # it, so "ready" arrives before the credentials exist. This bug was in the
@@ -60,7 +69,7 @@ docker run -d --name "$RUN-source" -e POSTGRES_DB=appdb -e POSTGRES_USER=appuser
 # met that gap in October 2026.
 ready=false
 for _ in $(seq 1 90); do
-  if docker exec -e PGPASSWORD=drilltestpassword "$RUN-source" psql -h 127.0.0.1 -tAq -U appuser -d appdb -c 'select 1' 2>/dev/null | grep -q '^1$'; then ready=true; break; fi
+  if docker exec -e PGPASSWORD "$RUN-source" psql -h 127.0.0.1 -tAq -U appuser -d appdb -c 'select 1' 2>/dev/null | grep -q '^1$'; then ready=true; break; fi
   sleep 2
 done
 [ "$ready" = true ] || { echo "the source postgres never accepted an authenticated query"; docker logs "$RUN-source" 2>&1 | tail -10; exit 1; }
@@ -196,25 +205,25 @@ mkdir -p "$WORK/mbackups" "$WORK/mstate"
 mdrill() {
   DRILL_ENGINE=mysql DRILL_IMAGE="$MARIADB_IMAGE" \
   DRILL_BACKUPS_PATH="$WORK/mbackups" DRILL_DB_NAME=appdb DRILL_DB_USER=root \
-  DRILL_DB_PASSWORD=drilltestpassword DRILL_STATE_DIR="$WORK/mstate" \
+  DRILL_DB_PASSWORD="$DRILL_PW" DRILL_STATE_DIR="$WORK/mstate" \
   DRILL_TIMEOUT=180 bash "$DRILL" 2>&1
 }
 docker rm -f "$RUN-msource" >/dev/null 2>&1
 docker run -d --name "$RUN-msource" -e MARIADB_DATABASE=appdb \
-  -e MARIADB_ROOT_PASSWORD=drilltestpassword "$MARIADB_IMAGE" >/dev/null
+  -e MARIADB_ROOT_PASSWORD "$MARIADB_IMAGE" >/dev/null
 mready=false
 for _ in $(seq 1 120); do
   # Over TCP, as above.
-  if docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword -h 127.0.0.1 --protocol=TCP -NBe 'select 1' 2>/dev/null | grep -q '^1$'; then mready=true; break; fi
+  if docker exec -e MYSQL_PWD "$RUN-msource" mariadb -uroot -h 127.0.0.1 --protocol=TCP -NBe 'select 1' 2>/dev/null | grep -q '^1$'; then mready=true; break; fi
   sleep 2
 done
 [ "$mready" = true ] || { echo "the source mariadb never accepted an authenticated query"; docker logs "$RUN-msource" 2>&1 | tail -10; exit 1; }
-docker exec "$RUN-msource" mariadb -uroot -pdrilltestpassword appdb -e "
+docker exec -e MYSQL_PWD "$RUN-msource" mariadb -uroot appdb -e "
   create table invoices(id int primary key auto_increment, total decimal(10,2));
   create table customers(id int primary key auto_increment, name varchar(64));
   insert into invoices(total) values (1),(2),(3);" \
   || { echo "cannot seed the source mariadb"; exit 1; }
-docker exec "$RUN-msource" mariadb-dump -uroot -pdrilltestpassword appdb | gzip > "$WORK/mbackups/app-2026-09-05_00-00.gz"
+docker exec -e MYSQL_PWD "$RUN-msource" mariadb-dump -uroot appdb | gzip > "$WORK/mbackups/app-2026-09-05_00-00.gz"
 [ "$(wc -c < "$WORK/mbackups/app-2026-09-05_00-00.gz")" -gt 300 ] \
   || { echo "the source mariadb dump is empty - the fixture failed, not the drill"; exit 1; }
 
@@ -238,6 +247,16 @@ head -c 400 "$WORK/mbackups/app-2026-09-05_00-00.gz" > "$WORK/mbackups/app-2026-
 rm -f "$WORK/mstate/last-ok"
 out="$(mdrill)"; rc=$?
 if [ $rc -ne 0 ]; then pass "a truncated MariaDB archive fails the drill"; else fail "a truncated MariaDB archive passed"; fi
+
+# NO PASSWORD ON A COMMAND LINE, over every drill above: the sampler has read
+# every process's arguments on this machine several times a second.
+kill "$SAMPLER" 2>/dev/null; wait "$SAMPLER" 2>/dev/null
+samples=$(wc -l < "$PS_COUNTS" | tr -d ' '); hits=$(awk '$1 > 0 { n++ } END { print n + 0 }' "$PS_COUNTS")
+if [ "$samples" -ge 100 ] && [ "$hits" -eq 0 ]; then
+  pass "no command line carried the password in $samples samples taken while every drill above ran"
+else
+  fail "$hits of $samples samples of the machine's command lines carried the password"
+fi
 
 echo
 echo "passed: $PASSED   failed: $FAILED"
