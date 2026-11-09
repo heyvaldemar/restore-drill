@@ -94,8 +94,8 @@ trap cleanup EXIT
 
 case "$DRILL_ENGINE" in
   postgres)
-    docker run -d --name "$CONTAINER" \
-      -e POSTGRES_DB="$DRILL_DB_NAME" -e POSTGRES_USER="$DRILL_DB_USER" \
+    POSTGRES_DB="$DRILL_DB_NAME" POSTGRES_USER="$DRILL_DB_USER" docker run -d --name "$CONTAINER" \
+      -e POSTGRES_DB -e POSTGRES_USER \
       -e POSTGRES_PASSWORD "$DRILL_IMAGE" >/dev/null \
       || die "could not start a throwaway $DRILL_IMAGE"
     # An AUTHENTICATED query, not pg_isready, and OVER TCP. Both database
@@ -112,8 +112,8 @@ case "$DRILL_ENGINE" in
     ready="psql -h 127.0.0.1 -tAq -U $DRILL_DB_USER -d $DRILL_DB_NAME -c 'select 1' | grep -q '^1$'"
     ;;
   mysql|mariadb)
-    docker run -d --name "$CONTAINER" \
-      -e MARIADB_DATABASE="$DRILL_DB_NAME" -e MYSQL_DATABASE="$DRILL_DB_NAME" \
+    MARIADB_DATABASE="$DRILL_DB_NAME" MYSQL_DATABASE="$DRILL_DB_NAME" docker run -d --name "$CONTAINER" \
+      -e MARIADB_DATABASE -e MYSQL_DATABASE \
       -e MARIADB_ROOT_PASSWORD -e MYSQL_ROOT_PASSWORD \
       "$DRILL_IMAGE" >/dev/null || die "could not start a throwaway $DRILL_IMAGE"
     # Over TCP for the same reason: see the postgres branch above.

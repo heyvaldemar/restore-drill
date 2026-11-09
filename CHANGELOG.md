@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Changed
+
+- **The throwaway database gets its name and user by name, like its password.** `restore-drill.sh` started it with `-e POSTGRES_DB="$DRILL_DB_NAME" -e POSTGRES_USER="$DRILL_DB_USER"` (and the MariaDB pair the same way) while the password already went as `-e POSTGRES_PASSWORD`. None of the three was a secret, but fleet conformance now flags any value expanded into `-e NAME=`, so all of them reach docker by name. Nothing the drill does changes.
 
 ## [1.1.2] - 2026-11-08
 
